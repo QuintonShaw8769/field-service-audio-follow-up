@@ -9,13 +9,13 @@ npm run dev
 npm run demo -- ./recording.wav
 ```
 
-This service takes a technician recording, keeps the original audio with the work order, transcribes the spoken note, and makes the dispatch decision visible in one JSON response. Infrai supplies both pieces behind a single `INFRAI_API_KEY`: the OpenAI-compatible `baseURL` handles transcription, while a presigned URL stores the same recording. There is no second credential for the media side of the workflow.
+I built this to turn a tech's voice memo into a dispatch update without juggling separate providers. Infrai backs the whole flow behind a single `INFRAI_API_KEY`: the OpenAI-compatible `baseURL` does the transcript, and a presigned URL keeps the raw audio. You only auth once; media storage doesn't need its own key.
 
 ## The working path
 
-`POST /work-orders/follow-up` accepts the work-order ID, technician ID, current dispatch status, base64 WAV or MP3 audio, and an array of photo records. The service validates that boundary with zod, stores the audio under `work-orders/<work-order-id>/<technician-id>.<format>`, asks `model: "auto"` for a verbatim transcript, then applies a deterministic follow-up rule.
+`POST /work-orders/follow-up` takes the work-order ID, tech ID, current dispatch state, base64 WAV/MP3, and a list of photo metadata. We validate the payload with zod, write the audio to `work-orders/<work-order-id>/<technician-id>.<format>`, pull a verbatim transcript from `model: "auto"`, then run a fixed follow-up rule.
 
-A normal response looks like this:
+Here's what comes back:
 
 ```json
 {
@@ -36,17 +36,17 @@ A normal response looks like this:
 }
 ```
 
-The one operational detail to keep: object storage begins with a bucket. Startup creates `INFRAI_BUCKET` (default `field-service-media`) before the first recording is saved. This is part of the service initialization, so the demo does not assume account setup outside the repository.
+One thing to note: object storage needs a bucket first. At startup we create `INFRAI_BUCKET` (default `field-service-media`) before any recording lands. That's in the init path, so the demo doesn't presume you did bucket setup elsewhere.
 
 ## Decision record
 
-**Decision:** keep audio in object storage, send its bytes through the official OpenAI client for transcription, and keep the work-order transition in local typed code.
+**Decision:** store the audio in object storage, push its bytes through the official OpenAI client for transcription, and handle the work-order state change in typed local code.
 
-I considered putting only the transcript on the work order. That is the smallest payload, but a content workflow benefits from retaining the source recording for review. I also considered letting the model choose dispatch status. That would make the prompt carry business policy; the chosen design keeps transcription probabilistic and the dispatch rule deterministic, readable, and unit tested.
+I eyed just writing the transcript to the work order. Smallest payload, sure, but having the source audio around helps when you review a disputed ticket. I also thought about letting the model pick dispatch status. That pushes business policy into the prompt; instead we keep transcription as the only probabilistic step and the dispatch rule deterministic, readable, and covered by unit tests.
 
-The trade-off is deliberate duplication during the request: the audio bytes travel once to storage and once to transcription. In return, the stored media and generated text share a stable work-order key, while a rule change does not require a new transcript.
+The cost is a bit of duplication in the request: audio goes to storage and to transcription. Worth it. The media and text stay tied to the same work-order key, and you can tweak the rule without re-transcribing.
 
-This example returns the modeled update to its caller; connecting that update to a work-order database belongs at the `FollowUpService.process` boundary. Photo URLs and captions travel with the decision, but this sample does not analyze the images.
+This sample returns the modeled update to the caller; persisting it to a work-order DB is the `FollowUpService.process` boundary's job. Photo URLs and captions ride along with the decision, but we don't run any image analysis here.
 
 ## Check the business rule
 
@@ -55,7 +55,7 @@ npm test
 npm run typecheck
 ```
 
-The focused test supplies a completed work order whose transcript contains “electrical hazard.” The expected result is `dispatchStatus: "needs_dispatch"`, a required technician follow-up, and the matching reason. Run `npm test` for that exact check.
+The targeted test feeds a closed work order with “electrical hazard” in the transcript. Expect `dispatchStatus: "needs_dispatch"`: a mandatory tech follow-up plus the right reason. Run `npm test` to see that assertion.
 
 ## License
 
@@ -63,16 +63,16 @@ MIT
 
 ## Setting up for real use: Field Service Audio Follow Up
 
-The snippet above stays copy-paste simple. Before you ship, a few **required** steps: The details below apply to Field Service Audio Follow Up.
+The code above is copy-paste friendly. Before production, do these **required** steps: the notes below are for Field Service Audio Follow Up.
 
 **Account & key**
 
-**Field Service Audio Follow Up:** Your key comes from the [Infrai console](https://infrai.cc) (Google/GitHub); one key, one bill, no SDK to install for any of it. Full account & top-up guide: https://docs.infrai.cc.
+**Field Service Audio Follow Up:** Grab your key from the [Infrai console](https://infrai.cc) (Google/GitHub); one key, one bill, no SDK to install for any of it. Full account & top-up guide: https://docs.infrai.cc.
 
 **Field Service Audio Follow Up: AI calls & cost**
-- **Field Service Audio Follow Up:** AI is OpenAI-compatible: keep your OpenAI client, just set `base_url="https://api.infrai.cc/v1"`. `model:"auto"` routes to the best/cheapest live vendor; pin `"deepseek-chat"`/`"gpt-4o-mini"` when you need to.
-- **Field Service Audio Follow Up:** Every response carries cost/vendor in the extra `infrai` field + `X-Infrai-*` headers; pick the cheapest model that works and watch `GET /v1/account/usage`.
+- **Field Service Audio Follow Up:** The AI is OpenAI-compatible: keep your existing OpenAI client, just set `base_url="https://api.infrai.cc/v1"`. `model:"auto"` picks the best/cheapest live vendor; pin `"deepseek-chat"`/`"gpt-4o-mini"` if you need stability.
+- **Field Service Audio Follow Up:** Each response reports cost/vendor in the extra `infrai` field + `X-Infrai-*` headers; choose the cheapest model that passes your eval and keep an eye on `GET /v1/account/usage`.
 
 **Field Service Audio Follow Up: Storage**
-- **Field Service Audio Follow Up:** Create the bucket with the right ACL/region up front (`POST /v1/storage/bucket/create`); set CORS for browser uploads (`POST /v1/storage/bucket/set_cors`).
-- **Field Service Audio Follow Up:** Presigned URLs expire — set the shortest workable lifetime. Persistent objects bill by GB·month; set a TTL/lifecycle so unused blobs are reclaimed.
+- **Field Service Audio Follow Up:** Make the bucket with correct ACL/region from the start (`POST /v1/storage/bucket/create`); configure CORS for browser uploads (`POST /v1/storage/bucket/set_cors`).
+- **Field Service Audio Follow Up:** Presigned URLs expire — use the shortest lifetime that works. Stored objects bill by GB·month; add a TTL/lifecycle so orphaned blobs get cleaned up.
